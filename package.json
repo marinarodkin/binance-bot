@@ -1,0 +1,15 @@
+{
+  "name": "untitled5",
+  "version": "1.0.0",
+  "description": "crypto bot",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "MArina Rodkin",
+  "license": "ISC",
+  "dependencies": {
+    "ccxt": "^1.66.5"
+  }
+}
