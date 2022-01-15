@@ -1,4 +1,5 @@
 const ccxt = require ('ccxt')
+const http = require ('request')
 const writeLog = require ('./write-log')
 const tradeParameters  = require ('./parameters')
 
@@ -32,20 +33,37 @@ const testBuy = async (symbol = 'FXS/BUSD', price) => {
 }
 
 const testSell = async (symbol, price, testBuyItem) => {
+  const startSum = 20
+  const buyAmount = startSum/testBuyItem.buy
+  const sellFor = buyAmount * price
   const date = new Date()
   const testSellItem =  {
     symbol,
     sell: price,
-    sellDate: date
+    sellDate: date,
+    diff: sellFor - startSum,
+    diffProc: (sellFor - startSum)/startSum * 100
   }
-  console.log('testBuyItem', testBuyItem)
-  console.log('testSellItem', testSellItem)
   await writeLog({...testBuyItem, ...testSellItem})
 }
 
-const getOhlcv = async (symbol = 'FXS/BUSD', timeframe = '1m') => {
-  const ohlcv = await exchange.fetchOHLCV (symbol, timeframe)
+const getOhlcv = async (symbol, timeframe = '1m') => {
+  const ohlcv = await exchange.fetchOHLCV (symbol, '1m')
   return ohlcv
+}
+
+const getEma = async(symbol, timeframe, emaPeriod) => {
+   const ohlcv = await getOhlcv(symbol, timeframe)
+   const lastData = ohlcv.slice(ohlcv.length - 50, ohlcv.length)
+   const data = lastData.map(item => item[4])
+   const k = 2/(emaPeriod + 1)
+   let emaData = []
+   emaData[0] = data[0]
+   for (let i = 1; i < data.length; i++) {
+     let newPoint = (data[i] * k) + (emaData[i-1] * (1-k))
+     emaData.push(newPoint.toFixed(3))
+  }
+  return emaData
 }
 
 const isTrendUp = async (symbol, timeframe, amount) => {
@@ -58,7 +76,7 @@ const isTrendUp = async (symbol, timeframe, amount) => {
   lastFiveItems.forEach(item => {
     const itemAverage = (item[1] + item[4])/2
     console.log('itemAverage', itemAverage, 'currentAverage', currentAverage)
-    if(isTrendUp && itemAverage > currentAverage) {
+    if (isTrendUp && itemAverage > currentAverage) {
       isTrendUp = true
     } else {
       isTrendUp = false
@@ -67,8 +85,27 @@ const isTrendUp = async (symbol, timeframe, amount) => {
   })
   return isTrendUp
 }
-const isEMA = async (symbol) => {
-  return false
+
+const sendToTelegram = (msg) => {
+  const token = '5028488359:AAFYQ86pH3oHpWkR10e5gBhGuvl22LVSXKQ'
+  const chat = '-716953702'
+  http.post(`https://api.telegram.org/bot${token}/sendMessage?chat_id=${chat}&parse_mode=html&text=${msg}`, function (error, response, body) {
+    if(response.statusCode!==200){
+      console.log('error')
+    }
+  });
+}
+const isEMACross = async (symbol) => {
+  const quickEma = await getEma(symbol, '1m', 7)
+  const longEma = await getEma(symbol, '1m', 14)
+  const lastQuickEma = quickEma[quickEma.length - 1]
+  const prevQuickEma = quickEma[quickEma.length - 2]
+  const lastLongEma = longEma[longEma.length - 1]
+  const prevLongEma = longEma[longEma.length - 1]
+  const isCross = lastQuickEma > lastLongEma &&  prevLongEma > prevQuickEma
+  console.log(symbol, 'lastQuick', lastQuickEma, 'laslong', lastLongEma, 'prevQ', prevQuickEma, 'pevL', prevLongEma)
+  console.log('isCross', isCross)
+  return {isCross, lastQuickEma, lastLongEma}
 }
 
 const analyseCoin = async (symbol) => {
@@ -85,12 +122,12 @@ const getPrice = async (symbol) => {
 
 const getPriceToSell = async(symbol, price) => {
   let currentPrice = price
-  let stopLossPrice = price * 0.98
-  let sellPrice = price * 1.1
+  let stopLossPrice = price * 0.994
+  let sellPrice = price * 1.006
   while (currentPrice < sellPrice && currentPrice > stopLossPrice) {
     await new Promise(resolve => setTimeout(resolve, 3000));
     currentPrice = await getPrice(symbol)
-    console.log('curentPrice', currentPrice)
+    console.log(symbol,'price, stoploss, slprice, curentPrice', price, stopLossPrice, sellPrice, currentPrice)
   }
   if (currentPrice >= sellPrice || currentPrice <= stopLossPrice) {
     return currentPrice
@@ -99,22 +136,37 @@ const getPriceToSell = async(symbol, price) => {
 
 const testTrade = async (symbol) => {
   let runAnalyse = true
+  let timeout = 30
   while (runAnalyse) {
-    const isTimeToBuy = await analyseCoin(symbol)
-    if (isTimeToBuy) {
-      const price = getPrice(symbol)
-      const testBuyItem = testBuy(symbol, price)
+    const EMA = await isEMACross(symbol)
+    if (EMA.isCross) {
+      sendToTelegram(symbol)
+      const price = await getPrice(symbol)
+      const testBuyItem = await testBuy(symbol, price)
       const sellPrice = await getPriceToSell(symbol, price)
       await testSell(symbol, sellPrice, testBuyItem)
     }
-    await new Promise(resolve => setTimeout(resolve, 5 * 60 * 1000)) // 5 min
+    const emaDiff = 100 - EMA.lastQuickEma/EMA.lastLongEma * 100
+    if (emaDiff < 0.1 && emaDiff > 0) {
+      timeout = 5
+    } else {
+      timeout = 30
+    }
+    console.log(symbol, 'diff', emaDiff, 'timeout', timeout)
+    await new Promise(resolve => setTimeout(resolve, timeout * 1000))
   }
 }
 
 const init = async () => {
-  const symbol = 'ATOM/USDT'
-  await testTrade(symbol)
-  // writeLog()
+  const symbols = tradeParameters.coins
+  console.log('symbols', symbols)
+  for(let i = 0; i < symbols.length; i++) {
+    testTrade(symbols[i])
+  }
+
+  // await testTrade(symbol)
+
+  // writeLog(  )
   // const orderInfo = await createBuyAndStopLessOrder(symbol)
   // const fix = await fixProfit(symbol, orderInfo)
 }
